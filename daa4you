@@ -1,0 +1,212 @@
+    const size = type === 'diamond' ? 30 : type === 'golden-star' ? 35 : type === 'bomb' ? 32 : 28;
+
+    const newItem: FallingItem = {
+      id: itemIdRef.current++,
+      x: Math.random() * (gameWidth - size),
+      y: -size,
+      speed: getItemSpeed(gameState.level),
+      type,
+      size,
+      rotation: Math.random() * 360,
+    };
+
+    setItems(prev => [...prev, newItem]);
+  }, [gameWidth, gameState.level, getItemSpeed]);
+
+  const addParticle = useCallback((x: number, y: number, text: string, color: string) => {
+    const id = particleIdRef.current++;
+    setParticles(prev => [...prev, { id, x, y, text, color }]);
+    setTimeout(() => {
+      setParticles(prev => prev.filter(p => p.id !== id));
+    }, 800);
+  }, []);
+
+  const checkCollision = useCallback((item: FallingItem): boolean => {
+    const basketTop = gameHeight - 70;
+    const basketLeft = basketX;
+    const basketRight = basketX + BASKET_WIDTH;
+
+    const itemCenterX = item.x + item.size / 2;
+    const itemBottom = item.y + item.size;
+
+    return (
+      itemBottom >= basketTop &&
+      itemBottom <= basketTop + 30 &&
+      itemCenterX >= basketLeft &&
+      itemCenterX <= basketRight
+    );
+  }, [basketX, gameHeight]);
+
+  const gameLoop = useCallback((timestamp: number) => {
+    if (!lastTimeRef.current) lastTimeRef.current = timestamp;
+    const delta = timestamp - lastTimeRef.current;
+    lastTimeRef.current = timestamp;
+
+    // Spawn items
+    spawnTimerRef.current += delta;
+    const spawnRate = getSpawnRate(gameState.level);
+    if (spawnTimerRef.current >= spawnRate) {
+      spawnTimerRef.current = 0;
+      spawnItem();
+    }
+
+    // Update items
+    setItems(prev => {
+      const newItems: FallingItem[] = [];
+      let scoreChange = 0;
+      let livesChange = 0;
+      let newCombo = gameState.combo;
+      let caught = 0;
+
+      for (const item of prev) {
+        const updatedItem = {
+          ...item,
+          y: item.y + item.speed * (delta / 16),
+          rotation: item.rotation + 1,
+        };
+
+        if (checkCollision(updatedItem)) {
+          caught++;
+          switch (item.type) {
+            case 'star':
+              scoreChange += 10 * (1 + Math.floor(newCombo / 5));
+              newCombo++;
+              addParticle(item.x, item.y, `+${10 * (1 + Math.floor(newCombo / 5))}`, '#facc15');
+              break;
+            case 'golden-star':
+              scoreChange += 50;
+              newCombo += 3;
+              addParticle(item.x, item.y, '+50 ⭐', '#f59e0b');
+              break;
+            case 'diamond':
+              scoreChange += 100;
+              newCombo += 5;
+              addParticle(item.x, item.y, '+100 💎', '#60a5fa');
+              break;
+            case 'heart':
+              livesChange += 1;
+              addParticle(item.x, item.y, '+❤️', '#ef4444');
+              break;
+            case 'bomb':
+              livesChange -= 1;
+              newCombo = 0;
+              scoreChange -= 20;
+              addParticle(item.x, item.y, '💥 -20', '#ef4444');
+              break;
+          }
+        } else if (updatedItem.y > gameHeight) {
+          if (item.type === 'star' || item.type === 'golden-star' || item.type === 'diamond') {
+            livesChange -= 0; // No penalty for missing stars (optional: set to -1)
+            newCombo = 0;
+          }
+        } else {
+          newItems.push(updatedItem);
+        }
+      }
+
+      if (scoreChange !== 0 || livesChange !== 0 || caught > 0) {
+        setGameState(prev => {
+          const newScore = Math.max(0, prev.score + scoreChange);
+          const newLives = Math.min(5, prev.lives + livesChange);
+          const newMaxCombo = Math.max(prev.maxCombo, newCombo);
+          const newHighScore = Math.max(prev.highScore, newScore);
+          const itemsCaught = caughtCount + caught;
+          const newLevel = Math.floor(itemsCaught / ITEMS_PER_LEVEL) + 1;
+
+          if (newLives <= 0) {
+            localStorage.setItem('catchStarsHighScore', newHighScore.toString());
+            return {
+              ...prev,
+              score: newScore,
+              lives: 0,
+              combo: 0,
+              maxCombo: newMaxCombo,
+              highScore: newHighScore,
+              isPlaying: false,
+              isGameOver: true,
+            };
+          }
+
+          return {
+            ...prev,
+            score: newScore,
+            lives: newLives,
+            level: newLevel,
+            combo: newCombo,
+            maxCombo: newMaxCombo,
+            highScore: newHighScore,
+          };
+        });
+        if (caught > 0) setCaughtCount(prev => prev + caught);
+      }
+
+      return newItems;
+    });
+
+    if (gameState.isPlaying && !gameState.isPaused) {
+      animationRef.current = requestAnimationFrame(gameLoop);
+    }
+  }, [gameState.level, gameState.combo, gameState.isPlaying, gameState.isPaused, checkCollision, spawnItem, getSpawnRate, addParticle, gameHeight, caughtCount]);
+
+  const startGame = useCallback(() => {
+    setItems([]);
+    setParticles([]);
+    setCaughtCount(0);
+    itemIdRef.current = 0;
+    lastTimeRef.current = 0;
+    spawnTimerRef.current = 0;
+    setBasketX(gameWidth / 2 - BASKET_WIDTH / 2);
+    setGameState(prev => ({
+      score: 0,
+      lives: INITIAL_LIVES,
+      level: 1,
+      highScore: prev.highScore,
+      isPlaying: true,
+      isPaused: false,
+      isGameOver: false,
+      combo: 0,
+      maxCombo: 0,
+    }));
+  }, [gameWidth]);
+
+  const togglePause = useCallback(() => {
+    setGameState(prev => ({
+      ...prev,
+      isPaused: !prev.isPaused,
+    }));
+  }, []);
+
+  const moveBasket = useCallback((x: number) => {
+    setBasketX(Math.max(0, Math.min(gameWidth - BASKET_WIDTH, x - BASKET_WIDTH / 2)));
+  }, [gameWidth]);
+
+  // Start/stop game loop
+  useEffect(() => {
+    if (gameState.isPlaying && !gameState.isPaused) {
+      lastTimeRef.current = 0;
+      animationRef.current = requestAnimationFrame(gameLoop);
+    } else {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    }
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [gameState.isPlaying, gameState.isPaused, gameLoop]);
+
+  return {
+    gameState,
+    basketX,
+    items,
+    particles,
+    startGame,
+    togglePause,
+    moveBasket,
+    BASKET_WIDTH,
+  };
+}
+
